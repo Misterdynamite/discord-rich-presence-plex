@@ -68,7 +68,8 @@ type Account struct {
 }
 
 type User struct {
-	Title string `json:"title"`
+	Title    string `json:"title"`
+	Username string `json:"username"`
 }
 
 func (c *Client) GetAccount(ctx context.Context) (*Account, error) {

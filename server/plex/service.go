@@ -194,18 +194,34 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 					s.logger.Error(err, "Failed to fetch sessions")
 					return
 				}
-				var username string
-				if s.serverConfig.ListenForUser == "" {
-					username = account.User.Title
-				} else {
-					username = s.serverConfig.ListenForUser
+				s.logger.Debug("Sessions response: %d session(s)", len(sessions))
+				for _, sess := range sessions {
+					s.logger.Debug("  Session: key=%q user=%q", sess.SessionKey, sess.User.Title)
 				}
-				isOwnSession := slices.IndexFunc(sessions, func(session Metadata) bool {
-					return session.SessionKey == notification.SessionKey && strings.EqualFold(session.User.Title, username)
-				}) != -1
-				if !isOwnSession {
-					s.logger.Debug("Session key %q doesn't belong to target user, ignoring", notification.SessionKey)
-					return
+				var userTitle, userUsername string
+				if s.serverConfig.ListenForUser == "" {
+					userTitle = account.User.Title
+					userUsername = account.User.Username
+				} else {
+					userTitle = s.serverConfig.ListenForUser
+					userUsername = s.serverConfig.ListenForUser
+				}
+				// Find a session matching this key. If none is found, allow through.
+				// Match against both display name and account username since Plex
+				// may return either depending on the endpoint.
+				matchIdx := slices.IndexFunc(sessions, func(session Metadata) bool {
+					return session.SessionKey == notification.SessionKey
+				})
+				if matchIdx != -1 {
+					match := sessions[matchIdx]
+					if match.User.Title != "" &&
+						!strings.EqualFold(match.User.Title, userTitle) &&
+						!strings.EqualFold(match.User.Title, userUsername) {
+						s.logger.Debug("Session key %q belongs to user %q, not %q, ignoring", notification.SessionKey, match.User.Title, userTitle)
+						return
+					}
+				} else {
+					s.logger.Debug("Session key %q not found in sessions list, allowing", notification.SessionKey)
 				}
 			}
 			clear(itemCache)

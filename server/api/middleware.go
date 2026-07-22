@@ -45,7 +45,7 @@ func ipCheckMiddleware(next http.Handler, allowedNetworks []string, trustedProxi
 		if xff != "" && isAllowed(ip, trustedProxyNets) {
 			xffIps := strings.Split(xff, ",")
 			// Iterate in reverse to find the first non-trusted-proxy IP, which would be the client's real IP
-			for i := len(xffIps) - 1; i >= 0; i-- {
+			for i := len(xffIps) - 1; i >= 0; i-- { //nolint:modernize
 				xffIp := strings.TrimSpace(xffIps[i])
 				ip = net.ParseIP(xffIp)
 				if ip == nil {

@@ -357,6 +357,12 @@ export const configSchema: ObjectSchema<Config> = {
 
 function getDisplayRuleFields() {
 	const fields: Fields<DisplayRule> = {
+		name: {
+			type: "string",
+			label: "Activity Name",
+			template: true,
+			description: 'Shown next to "Watching" / "Listening to" in Rich Presence. If empty, defaults to app name (Plex).',
+		},
 		details: {
 			type: "string",
 			label: "Details Text",
@@ -373,8 +379,8 @@ function getDisplayRuleFields() {
 			type: "autocomplete",
 			label: "Status Type",
 			template: true,
-			description: 'Field to display in the status in the member list: "details" (details text), "state" (state text), or "name" (Plex). For instance, if set to "details" and the details text above resolves to "XYZ", the status displayed will be "Watching XYZ" or "Listening to XYZ".',
-			options: ["details", "state", "name"],
+			description: 'Field to display under your name in the member list: "name" (activity name), "details" (details text), or "state" (state text). For instance, if set to "details" and the details text above resolves to "XYZ", the status displayed will be "🖥️ XYZ" or "🎵 XYZ".',
+			options: ["name", "details", "state"],
 		},
 		largeImage: {
 			type: "string",
@@ -428,13 +434,13 @@ function getDisplayRuleFields() {
 			type: "autocomplete",
 			label: "Progress Mode",
 			template: true,
-			description: 'Progress/timestamp display mode: "off" (disabled), "elapsed" (elapsed time), "remaining" (remaining time), or "bar" (progress bar). The "off" mode is currently broken due to a Discord bug/limitation.',
-			options: ["off", "elapsed", "remaining", "bar"],
+			description: 'Media progress display mode: "off" (disabled), "elapsed" (elapsed time), "remaining" (remaining time), "bar" (progress bar), or "state" (time elapsed since last state change). The "off" mode omits timestamps, which causes Discord to display time elapsed since last activity update.',
+			options: ["off", "elapsed", "remaining", "bar", "state"],
 		},
 		pauseTimeoutSeconds: {
 			type: "number",
 			label: "Pause Timeout",
-			description: "Seconds to wait before clearing Rich Presence after playback is paused. Use -1 to show indefinitely and 0 to clear immediately. Progress/timestamp display while paused is currently broken due to a Discord bug/limitation.",
+			description: "Seconds to wait before clearing Rich Presence after playback is paused. Use -1 to show indefinitely and 0 to clear immediately.",
 			defaultValue: 0,
 		},
 		buttons: {

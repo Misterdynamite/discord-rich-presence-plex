@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"drpp/server/api"
 	"drpp/server/cache"
@@ -15,7 +14,6 @@ import (
 	"drpp/server/mediator"
 	"drpp/server/plex"
 	"drpp/web"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -78,7 +77,7 @@ func main() {
 			server = api.NewServer(shutdownCtx, fmt.Sprintf("%s:%d", cfg.Web.BindAddress, cfg.Web.BindPort), web.BuildOutput, devMode, cfg.Web.AllowedNetworks, cfg.Web.TrustedProxies)
 			configController.RegisterRoutes(server)
 			server.RegisterCustomRoute(logger.SseHandler, http.MethodGet, "logs")
-			go func() {
+			go func(server *api.Server) {
 				if err := server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					if !disableWebUiLaunch {
 						if errno, ok := errors.AsType[syscall.Errno](err); ok {
@@ -92,9 +91,9 @@ func main() {
 					logger.Error(err, "Failed to run HTTP server")
 					fatalShutdown()
 				}
-			}()
+			}(server)
 		}
-		discordService := discord.NewService(cfg.Discord.ClientId, cfg.Discord.IpcPipeNumber, cfg.Discord.RateLimit)
+		discordService := discord.NewService(cfg.Discord.ClientId, cfg.Discord.IpcPipeNumber, cfg.Discord.RateLimit, cfg.Discord.IpcTimeoutSeconds)
 		var plexServices []*plex.Service
 		for _, user := range cfg.Plex.Users {
 			if !user.Enabled {
@@ -133,26 +132,26 @@ func main() {
 	}
 	setup(cfg, true)
 
-	// Allow at most one reload to be queued at a time
-	reloadCh := make(chan struct{}, 1)
 	var mu sync.Mutex
-	lastWebConfig, _ := json.Marshal(cfg.Web)
+	lastWebConfig := cfg.Web
 	reload := func() {
 		logger.Info("Reloading application due to config change")
 		mu.Lock()
 		defer mu.Unlock()
 		mediatorService.Stop()
 		cfg := configService.Config()
-		webConfig, _ := json.Marshal(cfg.Web)
-		setupServer := !bytes.Equal(webConfig, lastWebConfig) // TODO: This is a bit hacky
+		setupServer := !reflect.DeepEqual(cfg.Web, lastWebConfig)
 		if server != nil && setupServer {
 			if err := server.Stop(); err != nil {
 				logger.Error(err, "Failed to gracefully stop HTTP server")
 			}
 		}
-		lastWebConfig = webConfig
+		lastWebConfig = cfg.Web
 		setup(cfg, setupServer)
 	}
+
+	// Allow at most one reload to be queued at a time
+	reloadCh := make(chan struct{}, 1)
 	go func() {
 		for range reloadCh {
 			reload()
@@ -213,19 +212,23 @@ func launchUrl(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.Command("explorer", url) //nolint:gosec
 	case "linux":
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", url) //nolint:gosec
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", url) //nolint:gosec
 	default:
 		logger.Error(nil, "Unsupported OS %q for launching URL", runtime.GOOS)
 		return
 	}
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Run(); err != nil {
+		if runtime.GOOS == "windows" {
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 1 {
+				// explorer.exe always returns exit code 1
+				// https://github.com/microsoft/WSL/issues/6565
+				return
+			}
+		}
 		logger.Error(err, "Failed to launch URL")
-	}
-	if err := cmd.Wait(); err != nil {
-		logger.Error(err, "Failed to wait for URL launch")
 	}
 }

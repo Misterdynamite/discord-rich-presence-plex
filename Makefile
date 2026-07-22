@@ -1,4 +1,4 @@
-APP_VERSION = 3.2.0
+APP_VERSION := 3.4.0
 
 export GOEXPERIMENT := jsonv2
 
@@ -27,7 +27,7 @@ install-deps: install-deps-web install-deps-server
 install-deps-web:
 	@"$(MAKE)" -C web install-deps
 install-deps-server:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@b16c91e2c891bd4a1234508919f1a66682a2284b
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@c0d3ddc9cf3faa61a4e378e879ece580256d76e5
 
 upgrade-deps: upgrade-deps-web upgrade-deps-server
 upgrade-deps-web:

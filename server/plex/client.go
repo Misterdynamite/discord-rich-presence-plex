@@ -27,6 +27,7 @@ type Client struct {
 	BaseUrl    string
 	Token      string
 	httpClient *http.Client
+	wsDialer   *websocket.Dialer
 }
 
 func NewClient(baseUrl string, token string, timeout time.Duration) *Client {
@@ -34,6 +35,7 @@ func NewClient(baseUrl string, token string, timeout time.Duration) *Client {
 		BaseUrl:    baseUrl,
 		Token:      token,
 		httpClient: &http.Client{Timeout: timeout},
+		wsDialer:   &websocket.Dialer{HandshakeTimeout: timeout},
 	}
 }
 
@@ -68,8 +70,15 @@ type Account struct {
 }
 
 type User struct {
-	Title    string `json:"title"`
 	Username string `json:"username"`
+	Title    string `json:"title"`
+}
+
+func (u *User) UsernameOrTitle() string {
+	if u.Username == "" {
+		return u.Title
+	}
+	return u.Username
 }
 
 func (c *Client) GetAccount(ctx context.Context) (*Account, error) {
@@ -142,7 +151,7 @@ type Metadata struct {
 	SessionKey           string  `json:"sessionKey,omitzero"`
 	User                 User    `json:"User,omitzero"`
 	GrandparentThumb     string  `json:"grandparentThumb,omitzero"` // For live episodes
-	GrandparentTitle     string  `json:"grandparentTitle,omitzero"` // FOr live episodes
+	GrandparentTitle     string  `json:"grandparentTitle,omitzero"` // For live episodes
 }
 
 type Genre struct {
@@ -207,7 +216,7 @@ func (c *Client) StartNotificationListener(ctx context.Context, wg *sync.WaitGro
 		"X-Plex-Client-Identifier": []string{clientId},
 		"X-Plex-Token":             []string{c.Token},
 	}
-	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsUrl.String(), wsHeaders)
+	conn, resp, err := c.wsDialer.DialContext(ctx, wsUrl.String(), wsHeaders)
 	if err != nil {
 		return fmt.Errorf("connect websocket: %w", err)
 	}

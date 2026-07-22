@@ -29,10 +29,9 @@ type Service struct {
 	fatalShutdown context.CancelFunc
 	logger        *prefixedLogger
 
-	mu      sync.Mutex
-	running bool
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func NewService(userToken string, serverConfig config.Server, fatalShutdown context.CancelFunc) *Service {
@@ -44,27 +43,24 @@ func NewService(userToken string, serverConfig config.Server, fatalShutdown cont
 	}
 }
 
-var errRestart = errors.New("restart")
-
 func (s *Service) Start(callback func(activity *Activity)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running {
+	if s.cancel != nil {
 		return
 	}
-	s.running = true
 	var ctx context.Context
 	ctx, s.cancel = context.WithCancel(context.Background())
 	s.wg.Go(func() {
 		var retries int
 		for {
 			err := s.run(ctx, callback)
-			if err == nil {
+			if ctx.Err() != nil {
 				return
 			}
-			if err == errRestart { //nolint:errorlint
-				retries = 0
+			if err == nil {
 				s.logger.Info("Reconnecting in %d seconds", s.serverConfig.RetryIntervalSeconds)
+				retries = 0
 			} else {
 				s.logger.Error(err, "Failed to initialise")
 				if s.serverConfig.MaxRetriesBeforeExit > -1 && retries >= s.serverConfig.MaxRetriesBeforeExit {
@@ -87,11 +83,11 @@ func (s *Service) Start(callback func(activity *Activity)) {
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.running {
+	if s.cancel == nil {
 		return
 	}
-	s.running = false
 	s.cancel()
+	s.cancel = nil
 	s.wg.Wait()
 	s.logger.Info("Disconnected")
 }
@@ -107,7 +103,10 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 	if err != nil {
 		return fmt.Errorf("fetch account details: %w", err)
 	}
-	s.logger.Info("Signed in as user %q", account.User.Title)
+	if s.serverConfig.ListenForUser == "" {
+		s.serverConfig.ListenForUser = account.User.UsernameOrTitle()
+	}
+	s.logger.Info("Signed in as user %q, listening for user %q", account.User.UsernameOrTitle(), s.serverConfig.ListenForUser)
 
 	servers, err := client.GetServers(localCtx)
 	if err != nil {
@@ -151,8 +150,6 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 		serverUrls = append(serverUrls, s.serverConfig.Url)
 	}
 
-	activityCh := make(chan *Activity, 1)
-
 	itemCache := make(map[string]*Metadata)
 	getItem := func(ratingKey string, itemType string) *Metadata {
 		if ratingKey == "" {
@@ -170,7 +167,7 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 		return item
 	}
 
-	var lastSessionKey string
+	var lastSessionKey, lastState string
 
 	handler := func(n *NotificationContainer) {
 
@@ -181,7 +178,7 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 		s.logger.Debug("Notification: %#v", notification)
 
 		switch notification.State {
-		case "playing", "paused", "buffering", "stopped":
+		case "playing", "paused", "stopped":
 		default:
 			s.logger.Debug("Unrecognised state %q, ignoring", notification.State)
 			return
@@ -194,40 +191,29 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 					s.logger.Error(err, "Failed to fetch sessions")
 					return
 				}
-				s.logger.Debug("Sessions response: %d session(s)", len(sessions))
-				for _, sess := range sessions {
-					s.logger.Debug("  Session: key=%q user=%q", sess.SessionKey, sess.User.Title)
-				}
-				var userTitle, userUsername string
-				if s.serverConfig.ListenForUser == "" {
-					userTitle = account.User.Title
-					userUsername = account.User.Username
-				} else {
-					userTitle = s.serverConfig.ListenForUser
-					userUsername = s.serverConfig.ListenForUser
-				}
-				// Find a session matching this key. If none is found, allow through.
-				// Match against both display name and account username since Plex
-				// may return either depending on the endpoint.
-				matchIdx := slices.IndexFunc(sessions, func(session Metadata) bool {
+				sessionIndex := slices.IndexFunc(sessions, func(session Metadata) bool {
 					return session.SessionKey == notification.SessionKey
 				})
-				if matchIdx != -1 {
-					match := sessions[matchIdx]
-					if match.User.Title != "" &&
-						!strings.EqualFold(match.User.Title, userTitle) &&
-						!strings.EqualFold(match.User.Title, userUsername) {
-						s.logger.Debug("Session key %q belongs to user %q, not %q, ignoring", notification.SessionKey, match.User.Title, userTitle)
-						return
-					}
-				} else {
-					s.logger.Debug("Session key %q not found in sessions list, allowing", notification.SessionKey)
+				if sessionIndex == -1 {
+					s.logger.Debug("Session key %q not found in sessions list, ignoring", notification.SessionKey)
+					return
 				}
+				sessionUsername := sessions[sessionIndex].User.UsernameOrTitle()
+				isOwnSession := strings.EqualFold(sessionUsername, s.serverConfig.ListenForUser)
+				if !isOwnSession {
+					s.logger.Debug("Session key %q belongs to user %q, not %q, ignoring", notification.SessionKey, sessionUsername, s.serverConfig.ListenForUser)
+					return
+				}
+			}
+			if notification.State != "playing" && lastState == "playing" {
+				s.logger.Debug("Ignoring transition to non-playing state while a different playing session is active")
+				return
 			}
 			clear(itemCache)
 		}
 
 		lastSessionKey = notification.SessionKey
+		lastState = notification.State
 
 		item := getItem(notification.RatingKey, "main")
 		if item == nil {
@@ -285,16 +271,14 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 		if grandparentItem != nil {
 			activity.GrandparentItem = *grandparentItem
 		}
-		// Drain any stale pending activity
-		select {
-		case <-activityCh:
-		default:
-		}
-		activityCh <- activity
+		callback(activity)
 
 	}
 
 	errorHandler := func(err error) {
+		if localCtx.Err() != nil {
+			return
+		}
 		s.logger.Error(err, "Restarting due to notification listener error")
 		cancel()
 	}
@@ -318,17 +302,6 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 	s.logger.Info("Connected to server")
 
 	wg.Go(func() {
-		for {
-			select {
-			case <-localCtx.Done():
-				return
-			case activity := <-activityCh:
-				callback(activity)
-			}
-		}
-	})
-
-	wg.Go(func() {
 		connChecker := time.NewTicker(connCheckInterval)
 		defer connChecker.Stop()
 		for {
@@ -347,9 +320,6 @@ func (s *Service) run(ctx context.Context, callback func(activity *Activity)) er
 
 	wg.Wait()
 
-	if ctx.Err() == nil {
-		return errRestart
-	}
 	return nil
 
 }

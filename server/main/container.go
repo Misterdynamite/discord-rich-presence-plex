@@ -39,10 +39,6 @@ func setupContainer() {
 	var owner string
 	if uid == -1 || gid == -1 {
 		logger.Warning("Environment variable(s) DRPP_UID and/or DRPP_GID are/is not set. Manually ensure appropriate ownership of the runtime directory.")
-		info, err := os.Stat(discord.RuntimeDirectoryPath)
-		if err != nil {
-			logger.Fatal(err, "Failed to get runtime directory stat info")
-		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			logger.Fatal(nil, "Failed to get UID/GID from runtime directory stat info")
